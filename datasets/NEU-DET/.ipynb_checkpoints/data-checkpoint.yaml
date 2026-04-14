@@ -1,0 +1,5 @@
+train: root/yolov13/datasets/NEU-DET/train/images
+val: root/yolov13/datasets/NEU-DET/valid/images
+
+nc: 6
+names: ['crazing', 'inclusion', 'patches', 'pitted_surface', 'rolled-in_scale', 'scratches']

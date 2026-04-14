@@ -1,0 +1,61 @@
+# 最终融合架构：YOLOv13-Ours (Ghost Backbone + CBAM Neck + WIoU Loss)
+
+nc: 6 # 针对 NEU-DET 数据集改为 6 类
+scales: 
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024]   # Nano
+  s: [0.50, 0.50, 1024]   # Small
+  l: [1.00, 1.00, 512]    # Large
+  x: [1.00, 1.50, 512]    # Extra Large
+
+# ================== 核心创新点 1：Ghost 轻量化重构 ==================
+# 将原版极其沉重的 DSC3k2 和 A2C2f 特征提取模块，全部替换为 C3Ghost
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, Conv,  [64, 3, 2]] # 0-P1/2 (Stem层保留基础卷积提取极浅层特征)
+  - [-1, 1, Conv,  [128, 3, 2, 1, 2]] # 1-P2/4
+  - [-1, 2, C3Ghost,  [256, False]] # 2: 替换原版 DSC3k2，大幅削减参数
+  - [-1, 1, Conv,  [256, 3, 2, 1, 4]] # 3-P3/8
+  - [-1, 2, C3Ghost,  [512, False]] # 4: 替换原版 DSC3k2
+  - [-1, 1, DSConv,  [512, 3, 2]] # 5-P4/16
+  - [-1, 4, C3Ghost, [512, True]] # 6: 替换原版 A2C2f，轻量化深层特征提取
+  - [-1, 1, DSConv,  [1024, 3, 2]] # 7-P5/32
+  - [-1, 4, C3Ghost, [1024, True]] # 8: 替换原版 A2C2f
+
+# 以下 Head 部分与 Exp 2 完全保持一致，确保层级索引零错位
+head:
+  - [[4, 6, 8], 2, HyperACE, [512, 8, True, True, 0.5, 1, "both"]] # 9
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 10
+  - [ 9, 1, DownsampleConv, []] # 11
+  - [[6, 9], 1, FullPAD_Tunnel, []]  # 12     
+  - [[4, 10], 1, FullPAD_Tunnel, []]  # 13    
+  - [[8, 11], 1, FullPAD_Tunnel, []] # 14 
+  
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 15
+  - [[-1, 12], 1, Concat, [1]] # 16 cat backbone P4
+  - [-1, 2, DSC3k2, [512, True]] # 17
+  - [[-1, 9], 1, FullPAD_Tunnel, []]  # 18
+
+  - [17, 1, nn.Upsample, [None, 2, "nearest"]] # 19
+  - [[-1, 13], 1, Concat, [1]] # 20 cat backbone P3
+  - [-1, 2, DSC3k2, [256, True]] # 21
+  - [10, 1, Conv, [256, 1, 1]] # 22
+  - [[21, 22], 1, FullPAD_Tunnel, []]  # 23 (小目标检测基准层)
+  
+  - [-1, 1, Conv, [256, 3, 2]] # 24
+  - [[-1, 18], 1, Concat, [1]] # 25 cat head P4
+  - [-1, 2, DSC3k2, [512, True]] # 26
+  - [[-1, 9], 1, FullPAD_Tunnel, []]  # 27 (中目标检测基准层)
+
+  - [26, 1, Conv, [512, 3, 2]] # 28
+  - [[-1, 14], 1, Concat, [1]] # 29 cat head P5
+  - [-1, 2, DSC3k2, [1024,True]] # 30 
+  - [[-1, 11], 1, FullPAD_Tunnel, []]  # 31 (大目标检测基准层)
+  
+  # ================== 核心创新点 2：CBAM 注意力机制 ==================
+  - [23, 1, CBAM, [256]]  # 32
+  - [27, 1, CBAM, [512]]  # 33
+  - [31, 1, CBAM, [1024]] # 34
+
+  # ================== 探测头 ==================
+  - [[32, 33, 34], 1, Detect, [nc]] # 35: Detect(P3_CBAM, P4_CBAM, P5_CBAM)
